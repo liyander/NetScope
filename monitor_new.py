@@ -13,11 +13,11 @@ from datetime import datetime
 import json
 
 # Setup Logging
-LOG_FILE = "connection_logs.csv"
+LOG_FILE = "network_traffic_log.csv"
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Timestamp', 'Protocol', 'Local_Address', 'Remote_Address', 'Status'])
+        writer.writerow(['Timestamp', 'Interface', 'Bytes_Sent', 'Bytes_Recv', 'Upload_Speed_Bps', 'Download_Speed_Bps'])
 
 MAX_LEN = 60 # Better timeline history for graphs
 history = {}
@@ -48,6 +48,25 @@ def is_unwanted_localhost(c):
         
     return False
 
+
+USUAL_PORTS = {80, 443, 8080, 8050, 53, 5432, 3306, 6379, 27017, 8443, 9090}
+
+def is_unwanted_localhost(c):
+    # Check if this is local to local traffic
+    is_local = (c.laddr and c.laddr.ip in ['127.0.0.1', '::1']) and (not c.raddr or c.raddr.ip in ['127.0.0.1', '::1'])
+    if not is_local:
+        return False # keep it, it's external
+    
+    # It's local traffic. Check if ports are "usual"
+    lport = c.laddr.port if c.laddr else 0
+    rport = c.raddr.port if c.raddr else 0
+    
+    # If one of the ports is a common service port like 8050 (Dash API), ignore the connection
+    if lport in USUAL_PORTS or rport in USUAL_PORTS:
+        return True
+        
+    return False
+
 def update_data():
     global last_io, last_time, global_last_io, last_conns_set
     while True:
@@ -58,29 +77,34 @@ def update_data():
         current_io = psutil.net_io_counters(pernic=True)
         current_global = psutil.net_io_counters()
 
-        # Update bandwidth history (kept in memory for summary/graphs)
-        for nic, stats in current_io.items():
-            if stats.bytes_sent == 0 and stats.bytes_recv == 0: continue
+        # Update bandwidth history
+        with open(LOG_FILE, 'a', newline='') as f:
+            writer = csv.writer(f)
+            
+            for nic, stats in current_io.items():
+                if stats.bytes_sent == 0 and stats.bytes_recv == 0: continue
 
-            if nic not in history:
-                history[nic] = {
-                    'times': deque(maxlen=MAX_LEN),
-                    'upload': deque(maxlen=MAX_LEN),
-                    'download': deque(maxlen=MAX_LEN)
-                }
+                if nic not in history:
+                    history[nic] = {
+                        'times': deque(maxlen=MAX_LEN),
+                        'upload': deque(maxlen=MAX_LEN),
+                        'download': deque(maxlen=MAX_LEN)
+                    }
 
-            prev_stats = last_io.get(nic)
-            if prev_stats and time_dt > 0:
-                up_speed = (stats.bytes_sent - prev_stats.bytes_sent) / time_dt
-                down_speed = (stats.bytes_recv - prev_stats.bytes_recv) / time_dt
-            else:
-                up_speed = 0
-                down_speed = 0
+                prev_stats = last_io.get(nic)
+                if prev_stats and time_dt > 0:
+                    up_speed = (stats.bytes_sent - prev_stats.bytes_sent) / time_dt
+                    down_speed = (stats.bytes_recv - prev_stats.bytes_recv) / time_dt
+                else:
+                    up_speed = 0
+                    down_speed = 0
 
-            timestamp_str = datetime.fromtimestamp(current_time).strftime('%H:%M:%S')
-            history[nic]['times'].append(timestamp_str)
-            history[nic]['upload'].append(up_speed)
-            history[nic]['download'].append(down_speed)
+                timestamp_str = datetime.fromtimestamp(current_time).strftime('%H:%M:%S')
+                history[nic]['times'].append(timestamp_str)
+                history[nic]['upload'].append(up_speed)
+                history[nic]['download'].append(down_speed)
+
+                writer.writerow([datetime.fromtimestamp(current_time).strftime('%Y-%m-%d %H:%M:%S'), nic, stats.bytes_sent, stats.bytes_recv, up_speed, down_speed])
 
         last_io = current_io
         global_last_io = current_global
@@ -98,17 +122,13 @@ def update_data():
 
             new_conns = current_conns_set - last_conns_set
             
-            with open(LOG_FILE, 'a', newline='') as f:
-                writer = csv.writer(f)
-                for conn in new_conns:
-                    ctype = "TCP" if conn[2] == 1 else "UDP"
-                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    writer.writerow([timestamp, ctype, conn[0], conn[1], "ESTABLISHED"])
-                    system_logs.appendleft({
-                        'time': datetime.now().strftime('%H:%M:%S.%f')[:-3],
-                        'level': 'INFO',
-                        'msg': f"Incoming {ctype} connection from {conn[1]} to {conn[0]}"
-                    })
+            for conn in new_conns:
+                ctype = "TCP" if conn[2] == 1 else "UDP"
+                system_logs.appendleft({
+                    'time': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+                    'level': 'INFO',
+                    'msg': f"Incoming {ctype} connection from {conn[1]} to {conn[0]}"
+                })
             
             if int(current_time) % 20 == 0:
                 system_logs.appendleft({
@@ -660,13 +680,8 @@ def open_modal(row_clicks):
 )
 def export_data(n_clicks):
     import os
-    if n_clicks and n_clicks > 0 and os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
-                content = f.read()
-            return dict(content=content, filename="connection_logs.csv")
-        except Exception as e:
-            print(f"Export error: {e}")
+    if n_clicks > 0 and os.path.exists(LOG_FILE):
+        return dcc.send_file(LOG_FILE)
     return dash.no_update
 
 if __name__ == '__main__':
