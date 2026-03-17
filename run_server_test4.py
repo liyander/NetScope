@@ -1,33 +1,31 @@
 
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
 import threading
-import time
-import requests
-import json
-import monitor
-from werkzeug.serving import make_server
 
-class ServerThread(threading.Thread):
-    def __init__(self, app):
-        threading.Thread.__init__(self)
-        self.server = make_server('127.0.0.1', 8050, app)
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
+app.layout = html.Div([
+    html.Button("Export", id="btn", n_clicks=0),
+    dcc.Download(id="download")
+])
 
-    def run(self):
-        self.server.serve_forever()
+@app.callback(
+    Output("download", "data"),
+    Input("btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def export(n):
+    return dcc.send_file("network_traffic_log.csv")
 
-    def shutdown(self):
-        self.server.shutdown()
+def test():
+    import time
+    time.sleep(2)
+    # simulate with dash test client if possible, or just open browser
+    import os
+    os._exit(0)
 
-s = ServerThread(monitor.app.server)
-s.start()
-time.sleep(2)
-try:
-    print('Sending POST to _dash-update-component')
-    res = requests.post(
-        'http://127.0.0.1:8050/_dash-update-component',
-        json={'output': '..page-content.children...link-dashboard.className...link-logs.className..', 'outputs': [{'id': 'page-content', 'property': 'children'}, {'id': 'link-dashboard', 'property': 'className'}, {'id': 'link-logs', 'property': 'className'}], 'inputs': [{'id': 'url', 'property': 'pathname', 'value': '/logs'}], 'changedPropIds': ['url.pathname']}
-    )
-    print('STATUS', res.status_code)
-    print(res.text[:100])
-finally:
-    s.shutdown()
+threading.Thread(target=test).start()
+print("Running dash")
+app.run(port=8060, host="127.0.0.1")
 
